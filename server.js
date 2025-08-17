@@ -294,30 +294,30 @@ class PublicMusicRoomServer {
                 });
             });
             
+                    // Add songs to room playlist
+        socket.on('add-to-room-playlist', (data) => {
+            const { roomCode, songs } = data;
+            const room = this.rooms.get(roomCode);
+            const user = this.userSockets.get(socket.id);
+            
+            if (!room || !user) {
+                socket.emit('error', { message: 'Room not found or user not in room' });
+                return;
+            }
+            
             // Add songs to room playlist
-            socket.on('add-to-room-playlist', (data) => {
-                const { roomCode, songs } = data;
-                const room = this.rooms.get(roomCode);
-                const user = this.userSockets.get(socket.id);
-                
-                if (!room || !user) {
-                    socket.emit('error', { message: 'Room not found or user not in room' });
-                    return;
-                }
-                
-                // Add songs to room playlist
-                const newSongs = songs.filter(song => 
-                    !room.playlist.some(existing => existing.id === song.id)
-                );
-                
-                room.playlist.push(...newSongs);
-                
-                // Notify all participants of playlist update
-                this.io.to(roomCode).emit('room-playlist-updated', {
-                    playlist: room.playlist,
-                    addedBy: user.displayName
-                });
+            const newSongs = songs.filter(song => 
+                !room.playlist.some(existing => existing._id === song._id)
+            );
+            
+            room.playlist.push(...newSongs);
+            
+            // Notify all participants of playlist update
+            this.io.to(roomCode).emit('room-playlist-updated', {
+                playlist: room.playlist,
+                addedBy: user.displayName
             });
+        });
             
             // Remove songs from room playlist
             socket.on('remove-from-room-playlist', (data) => {
@@ -330,8 +330,8 @@ class PublicMusicRoomServer {
                     return;
                 }
                 
-                // Remove songs from room playlist
-                room.playlist = room.playlist.filter(song => !songIds.includes(song.id));
+                            // Remove songs from room playlist
+            room.playlist = room.playlist.filter(song => !songIds.includes(song._id));
                 
                 // Notify all participants of playlist update
                 this.io.to(roomCode).emit('room-playlist-updated', {
