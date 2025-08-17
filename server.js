@@ -2,6 +2,9 @@ const { Server } = require('socket.io');
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 class PublicMusicRoomServer {
     constructor(port = process.env.PORT || 3001) {
@@ -10,10 +13,44 @@ class PublicMusicRoomServer {
         this.userSockets = new Map(); // socketId -> userData
         this.roomCodes = new Set(); // Track existing room codes
         
+        // File storage setup
+        this.uploadsDir = path.join(__dirname, 'uploads');
+        if (!fs.existsSync(this.uploadsDir)) {
+            fs.mkdirSync(this.uploadsDir, { recursive: true });
+        }
+        
+        // Configure multer for file uploads
+        this.storage = multer.diskStorage({
+            destination: (req, file, cb) => {
+                cb(null, this.uploadsDir);
+            },
+            filename: (req, file, cb) => {
+                // Generate unique filename: timestamp_originalname
+                const uniqueSuffix = Date.now() + '_' + Math.round(Math.random() * 1E9);
+                cb(null, uniqueSuffix + '_' + file.originalname);
+            }
+        });
+        
+        this.upload = multer({ 
+            storage: this.storage,
+            fileFilter: (req, file, cb) => {
+                // Only allow audio files
+                if (file.mimetype.startsWith('audio/')) {
+                    cb(null, true);
+                } else {
+                    cb(new Error('Only audio files are allowed!'), false);
+                }
+            },
+            limits: {
+                fileSize: 50 * 1024 * 1024 // 50MB limit
+            }
+        });
+        
         // Create Express app for health checks
         this.app = express();
         this.app.use(cors());
         this.app.use(express.json());
+        this.app.use(express.static(this.uploadsDir)); // Serve uploaded files
         
         // Health check endpoint
         this.app.get('/health', (req, res) => {
@@ -32,6 +69,71 @@ class PublicMusicRoomServer {
                 version: '1.0.0',
                 status: 'running'
             });
+        });
+        
+        // File upload endpoint
+        this.app.post('/upload-song', this.upload.single('song'), (req, res) => {
+            try {
+                if (!req.file) {
+                    return res.status(400).json({ error: 'No file uploaded' });
+                }
+                
+                const { roomCode, songId, title, artist, album, duration } = req.body;
+                
+                // Store file info
+                const uploadedSong = {
+                    _id: songId,
+                    title: title || req.file.originalname,
+                    artist: artist || 'Unknown Artist',
+                    album: album || 'Unknown Album',
+                    duration: duration || 0,
+                    filename: req.file.filename,
+                    filePath: `/uploads/${req.file.filename}`,
+                    uploadedAt: new Date(),
+                    roomCode: roomCode
+                };
+                
+                res.json({
+                    success: true,
+                    song: uploadedSong,
+                    message: 'Song uploaded successfully'
+                });
+                
+            } catch (error) {
+                console.error('Upload error:', error);
+                res.status(500).json({ error: 'Upload failed' });
+            }
+        });
+        
+        // Music streaming endpoint - now serves actual uploaded files
+        this.app.get('/stream/:roomCode/:songId', (req, res) => {
+            const { roomCode, songId } = req.params;
+            const room = this.rooms.get(roomCode);
+            
+            if (!room) {
+                return res.status(404).json({ error: 'Room not found' });
+            }
+            
+            const song = room.playlist.find(s => s._id === songId);
+            if (!song || !song.filePath) {
+                return res.status(404).json({ error: 'Song not found or not available for streaming' });
+            }
+            
+            // Serve the actual uploaded file
+            const filePath = path.join(this.uploadsDir, song.filename);
+            
+            if (!fs.existsSync(filePath)) {
+                return res.status(404).json({ error: 'File not found on server' });
+            }
+            
+            // Set proper headers for audio streaming
+            res.setHeader('Content-Type', 'audio/mpeg');
+            res.setHeader('Accept-Ranges', 'bytes');
+            res.setHeader('Cache-Control', 'public, max-age=3600');
+            
+            // Stream the file
+            const stream = fs.createReadStream(filePath);
+            stream.pipe(res);
         });
         
         this.server = http.createServer(this.app);
